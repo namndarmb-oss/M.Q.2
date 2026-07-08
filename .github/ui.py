@@ -11,14 +11,14 @@ class MainScreen(BoxLayout):
         self.title = Label(
             text="MQChatX",
             font_size=30,
-            size_hint=(1, 0.15)
+            size_hint=(1, 0.1)
         )
 
         self.chat = Label(
-            text="سلام!\nپیام‌های شما اینجا نمایش داده می‌شوند.",
+            text="",
             halign="left",
             valign="top",
-            size_hint=(1, 0.55)
+            size_hint=(1, 0.6)
         )
 
         self.message = TextInput(
@@ -32,7 +32,16 @@ class MainScreen(BoxLayout):
             size_hint=(1, 0.15)
         )
 
+        self.send.bind(on_press=self.send_message)
+
         self.add_widget(self.title)
         self.add_widget(self.chat)
         self.add_widget(self.message)
         self.add_widget(self.send)
+
+    def send_message(self, instance):
+        text = self.message.text.strip()
+
+        if text:
+            self.chat.text += f"\n👤 شما: {text}"
+            self.message.text = ""
