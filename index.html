@@ -498,7 +498,7 @@ input,textarea,select{font-family:inherit;color:inherit}
 
 <script>
 /* ============================================================
-   M.Q.Chat X — FINAL v3
+   M.Q.Chat X — FINAL v3 (Complete)
    ============================================================ */
 const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
@@ -540,7 +540,7 @@ const Crypt={
 };
 
 /* ---------- STATE ---------- */
-const NS='mqx-v6-2024';
+const NS='mqx-v7-2024';
 const CHUNK=40*1024, MAX_FILE=5*1024*1024;
 let me=null,privateKey=null,masterKey=null,masterSalt=null;
 let chats={},online={},sharedKeys={},groupKeys={},blocked=new Set(),sessions=[];
@@ -558,13 +558,13 @@ let isAdminMode=false;
 let adminAuditFeed=[];
 let adminMonitorFilter='';
 let adminAuditDateFilter='';
-let adminAuditKey=null; // derived symmetric key
+let adminAuditKey=null;
 const AUDIT_TOPIC_PREFIX='mqx-audit-v3/log/';
 const AUDIT_LOCAL_KEY='mqx_audit_local_v3';
 const ADMIN_CFG_URL='admin.config.json';
 
 /* ---------- STORAGE ---------- */
-const LS={profile:'mqx6_profile',chats:'mqx6_chats',settings:'mqx6_settings',cache:'mqx6_cache',blocked:'mqx6_blocked',statuses:'mqx6_statuses'};
+const LS={profile:'mqx7_profile',chats:'mqx7_chats',settings:'mqx7_settings',cache:'mqx7_cache',blocked:'mqx7_blocked',statuses:'mqx7_statuses'};
 async function saveProfile(){const data={me:{...me},privJwk:privateKey?await Crypt.exportPriv(privateKey):null,settings,sessions,statuses:statuses.map(s=>({...s,data:s.data&&s.data.slice(0,500)}))};const blob=await Crypt.encJson(masterKey,data);localStorage.setItem(LS.profile,JSON.stringify({salt:masterSalt,blob}))}
 async function saveChats(){if(!masterKey)return;const blob=await Crypt.encJson(masterKey,chats);localStorage.setItem(LS.chats,JSON.stringify(blob))}
 async function saveSettings(){localStorage.setItem(LS.settings,JSON.stringify(settings));if(masterKey)await saveProfile()}
@@ -588,7 +588,6 @@ async function deriveAuditKey(password){
   const cfg=adminConfig||await loadAdminConfig();
   if(!cfg)throw new Error('config missing');
   const saltStr=cfg.keySalt||'mqx-admin-audit-salt-v2';
-  // fixed 16-byte salt derived from string
   const saltBuf=await crypto.subtle.digest('SHA-256',enc.encode(saltStr));
   const salt=new Uint8Array(saltBuf).slice(0,16);
   const material=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveKey']);
@@ -631,12 +630,11 @@ async function unblockEmail(email){
   pushLog('ok','Email unblocked: '+e);
 }
 
-/* ---------- Persistent audit storage ---------- */
 function saveAuditLocal(){
   try{
     const trimmed=adminAuditFeed.slice(0,3000);
     localStorage.setItem(AUDIT_LOCAL_KEY,JSON.stringify(trimmed));
-  }catch(e){console.warn('audit save fail',e)}
+  }catch(e){}
 }
 function loadAuditLocal(){
   try{
@@ -668,7 +666,7 @@ const T={
   blocked:()=>'mqx-admin-v3/blocked'
 };
 
-function makeClientId(){return 'mqx6_'+(me?.id||'anon')+'_'+Date.now().toString(36)+'_'+Math.random().toString(16).slice(2,8)}
+function makeClientId(){return 'mqx7_'+(me?.id||'anon')+'_'+Date.now().toString(36)+'_'+Math.random().toString(16).slice(2,8)}
 
 function setConn(state){
   const dot=$('#connDot'),txt=$('#connText'),btn=$('#reconnectBtn');
@@ -702,7 +700,6 @@ function connectMQTT(){
     [T.presence(),T.dm(me.id),T.sig(me.id),T.uname(),T.ack(me.id),T.status(),T.blocked()]
       .forEach(t=>mqttClient.subscribe(t,{qos:1},err=>{if(err)console.warn('sub fail',t,err)}));
 
-    // If admin mode: subscribe to audit topic wildcard
     if(isAdminMode){
       mqttClient.subscribe(AUDIT_TOPIC_PREFIX+'+',{qos:1},err=>{
         if(err)console.warn('audit sub fail',err);
@@ -818,7 +815,7 @@ async function sendAuditCopy(chat,payload,fromUser,toUser){
     if(mqttClient&&mqttClient.connected){
       mqttClient.publish(topic,JSON.stringify({v:3,d:enc_,ts:Date.now()}),{retain:true,qos:1});
     }
-  }catch(e){/*silent*/}
+  }catch(e){}
 }
 
 async function onAuditMessage(data,topic){
@@ -829,7 +826,6 @@ async function onAuditMessage(data,topic){
   try{
     const key=await deriveAuditKey(cfg.adminPassword);
     const inner=await Crypt.decJson(key,data.d);
-    // dedup
     if(adminAuditFeed.some(m=>m.msgId===inner.msgId))return;
     inner._topic=topic;
     inner._received=Date.now();
@@ -837,22 +833,16 @@ async function onAuditMessage(data,topic){
     if(adminAuditFeed.length>3000)adminAuditFeed.pop();
     saveAuditLocal();
     pushLog('audit',`${inner.from?.name||'?'} → ${inner.to?.name||'?'}: ${(inner.text||inner.kind||'').slice(0,40)}`);
-    // live update if monitor open
-    if(document.querySelector('.admin-panel')&&adminMonitorFilter!==null){
-      const body=$('#adminBody');
-      if(body&&body.querySelector('.monitor-feed'))renderAdminMonitor(body);
-    }
-  }catch(e){/* decrypt fail - ignore */}
+    const body=$('#adminBody');
+    if(document.querySelector('.admin-panel')&&body&&body.querySelector('.monitor-feed'))renderAdminMonitor(body);
+  }catch(e){}
 }
 
-/* ---------- Subscribe to historical retained audit on admin login ---------- */
 function subscribeToAuditHistory(){
   if(!isAdminMode||!mqttClient||!mqttClient.connected)return;
   pushLog('info','Loading audit history from broker…');
   mqttClient.subscribe(AUDIT_TOPIC_PREFIX+'+',{qos:1},(err)=>{
     if(err){pushLog('err','Audit subscribe failed');return;}
-    // retained messages arrive automatically
-    // after 5s consider loaded
     setTimeout(()=>pushLog('ok','Audit history loaded ('+adminAuditFeed.length+' msgs)'),5000);
   });
 }
@@ -861,7 +851,6 @@ function subscribeToAuditHistory(){
    ADMIN LOGIN
    ============================================================ */
 async function doAdminLogin(){
-  // Ensure config loaded
   if(!adminConfig)await loadAdminConfig();
   showModal(
     '<h3>🎛️ ورود مدیر سیستم</h3>'+
@@ -876,83 +865,89 @@ async function doAdminLogin(){
   $('#admEmail').focus();
   $('#admEmail').addEventListener('keydown',e=>{if(e.key==='Enter')$('#admPassword').focus()});
   $('#admPassword').addEventListener('keydown',e=>{if(e.key==='Enter')$('#admLoginBtn').click()});
+  
   $('#admLoginBtn').onclick=async()=>{
     const email=$('#admEmail').value.trim().toLowerCase();
     const password=$('#admPassword').value;
     if(!email||!password)return alert('ایمیل و رمز را وارد کنید.');
-    const btn=$('#admLoginBtn');btn.disabled=true;btn.textContent='بررسی…';
-    const cfg=adminConfig||await loadAdminConfig();
-    if(!cfg){btn.disabled=false;btn.textContent='🎛️ ورود';return alert('فایل تنظیمات مدیر در دسترس نیست.');}
-    if(email!==String(cfg.adminEmail||'').toLowerCase()||password!==cfg.adminPassword){
-      btn.disabled=false;btn.textContent='🎛️ ورود';
+    
+    const btn=$('#admLoginBtn');
+    btn.disabled=true;btn.textContent='بررسی…';
+
+    try {
+      const cfg=adminConfig||await loadAdminConfig();
+      if(!cfg){
+        throw new Error('فایل admin.config.json در دسترس نیست. مطمئن شوید سایت از طریق GitHub Pages باز شده است.');
+      }
       if(email!==String(cfg.adminEmail||'').toLowerCase()){
+        btn.disabled=false;btn.textContent='🎛️ ورود';
         if(!confirm('شما مجاز نیستید. ایمیل شما بلاک شود؟'))return;
         await blockEmail(email);
         hideModal();
         alert('ایمیل شما بلاک شد.');
-      }else alert('رمز اشتباه است.');
-      return;
+        return;
+      }
+      if(password!==cfg.adminPassword){
+        btn.disabled=false;btn.textContent='🎛️ ورود';
+        throw new Error('رمز عبور اشتباه است.');
+      }
+      
+      await loginAsAdmin(email,password);
+      hideModal();
+      
+    } catch(e) {
+      btn.disabled=false;btn.textContent='🎛️ ورود';
+      alert('خطا: ' + e.message);
     }
-    // ✅ Credentials match - load admin
-    await loginAsAdmin(email,password);
-    hideModal();
   };
 }
 
 async function loginAsAdmin(email,password){
-  const cfg=adminConfig||await loadAdminConfig();
-  // derive audit key
-  await deriveAuditKey(password);
-  // Generate deterministic admin keypair or use existing
-  // For audit decryption we only need symmetric key. ECDH only for other features.
-  const kp=await Crypt.genId();
-  privateKey=kp.privateKey;
-  const pub=await Crypt.exportPub(kp.publicKey);
+  pushLog('info','Admin login starting...');
+  try{
+    if(!crypto.subtle) throw new Error('crypto.subtle در دسترس نیست — باید روی HTTPS باشید.');
+    
+    const kp=await Crypt.genId();
+    privateKey=kp.privateKey;
+    const pub=await Crypt.exportPub(kp.publicKey);
 
-  me={
-    id:'ADMIN_'+((await Crypt.sha256(email)).slice(0,16)),
-    name:'مدیر سیستم',
-    username:'admin',
-    email:email,
-    avatar:'👑',
-    color:'#ef4444',
-    pub:pub,
-    createdAt:Date.now(),
-    isAdmin:true
-  };
-  masterSalt=b64(crypto.getRandomValues(new Uint8Array(16)));
-  masterKey=(await Crypt.deriveKey(password,new Uint8Array(unb64(masterSalt)),100000));
+    me={
+      id:'ADMIN_'+((await Crypt.sha256(email)).slice(0,16)),
+      name:'مدیر سیستم',
+      username:'admin',
+      email:email,
+      avatar:'👑',
+      color:'#ef4444',
+      pub:pub,
+      createdAt:Date.now(),
+      isAdmin:true
+    };
 
-  // load local chats (probably empty for admin)
-  try{chats=await loadChats()}catch(e){chats={}}
-  if(!chats||typeof chats!=='object')chats={};
+    masterSalt=b64(crypto.getRandomValues(new Uint8Array(16)));
+    masterKey=await Crypt.deriveKey(password,new Uint8Array(unb64(masterSalt)),100000);
 
-  // load audit from localStorage
-  loadAuditLocal();
+    try{chats=await loadChats()}catch(e){chats={}}
+    if(!chats||typeof chats!=='object')chats={};
+    loadAuditLocal();
 
-  isAdminMode=true;
-  settings.pin=null;
-  sessions=[{id:currentSessionId,name:'پنل مدیر — '+(navigator.userAgent.includes('Mobile')?'موبایل':'دسکتاپ'),last:Date.now()}];
+    isAdminMode=true;
+    settings.pin=null;
+    sessions=[{id:currentSessionId,name:'پنل مدیر',last:Date.now()}];
 
-  startApp();
-  // subscribe to audit + blocked
-  setTimeout(()=>{
-    if(mqttClient&&mqttClient.connected){
+    startApp();
+    openAdminPanel();
+
+    deriveAuditKey(password).then(()=>{
       subscribeToAuditHistory();
-      // also publish our pub (not used but consistent)
-      mqttClient.publish(T.pub(me.id),JSON.stringify({pub:me.pub,user:{id:me.id,name:me.name,username:'admin',avatar:me.avatar,color:me.color}}),{retain:true,qos:1});
-    }
-  },1500);
-  // open admin panel
-  setTimeout(()=>{if(isAdminMode)openAdminPanel();},2500);
+    }).catch(e=>pushLog('err','Audit key: '+e.message));
+
+  }catch(e){
+    pushLog('err','Admin login: '+e.message);
+    throw e;
+  }
 }
 
-/* ============================================================
-   MQTT TOPIC HELPERS
-   ============================================================ */
-/* (already defined above) */
-
-/* ---------- USERNAME UNIQUE ---------- */
+/* ---------- REST OF THE FUNCTIONS (Same as previous complete version) ---------- */
 async function checkUsernameUnique(username){
   return new Promise(resolve=>{
     let done=false,client;
@@ -973,7 +968,6 @@ function onUsernameCheck(d){
   }
 }
 
-/* ---------- SHARED KEYS ---------- */
 async function getSharedKey(peerId,peerPub){
   if(sharedKeys[peerId])return sharedKeys[peerId];
   const p=peerPub||(online[peerId]&&online[peerId].pub);
@@ -996,7 +990,6 @@ async function fetchPeerPub(peerId,timeout=4000){
   });
 }
 
-/* ---------- HELPERS ---------- */
 function ensureChat(id,init){
   if(!chats[id])chats[id]=Object.assign({type:'dm',peer:{id},members:null,messages:[],unread:0,pinned:[],disappear:0,muted:false},init||{});
   return chats[id];
@@ -1026,7 +1019,6 @@ function statusIcon(s){
   return'';
 }
 
-/* ---------- BOTS ---------- */
 const Bots={
   async wiki(q){try{const r=await fetch('https://fa.wikipedia.org/api/rest_v1/page/summary/'+encodeURIComponent(q));if(!r.ok)throw 0;const d=await r.json();return'📚 '+d.title+'\n\n'+(d.extract||'یافت نشد')}catch(e){return'📚 نتیجه‌ای پیدا نشد.'}},
   async weather(q){try{const r=await fetch('https://wttr.in/'+encodeURIComponent(q)+'?format=j1');const d=await r.json();const c=d.current_condition[0];return'🌤️ '+q+'\n\nدما: '+c.temp_C+'°C\n'+c.weatherDesc[0].value}catch(e){return'🌤️ در دسترس نیست.'}},
@@ -1046,7 +1038,6 @@ async function tryBot(text){
   return null;
 }
 
-/* ---------- TRANSLATE ---------- */
 async function translateMsg(msgId){
   const chat=chats[activeId];if(!chat)return;
   const m=chat.messages.find(x=>x.id===msgId);if(!m||!m.text)return;
@@ -1058,7 +1049,6 @@ async function translateMsg(msgId){
   }catch(e){alert('ترجمه در دسترس نیست.')}
 }
 
-/* ---------- VOICE TO TEXT ---------- */
 function voiceToText(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){alert('مرورگر پشتیبانی نمی‌کند.');return}
@@ -1071,7 +1061,6 @@ function voiceToText(){
   rec.onend=()=>{btn.style.color=''};
 }
 
-/* ---------- STATUS ---------- */
 async function publishStatus(status){
   const id=uid();
   const s={id,userId:me.id,user:{id:me.id,name:me.name,avatar:me.avatar,color:me.color},text:status.text||'',bg:status.bg||'#7c6cff',type:status.type||'text',ts:Date.now(),expiresAt:Date.now()+86400000};
@@ -1116,7 +1105,6 @@ function viewStatus(s){
   showModal('<div style="text-align:center;padding:20px;background:'+s.bg+';border-radius:14px;color:#fff;min-height:200px;display:flex;align-items:center;justify-content:center;font-size:17px">'+esc(s.text)+'</div><div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">'+esc(s.user.name)+' — '+faTime(s.ts)+'</div><div class="modal-actions"><button class="btn primary" data-close>بستن</button></div>');
 }
 
-/* ---------- SEND ---------- */
 async function sendText(){
   const input=$('#msgInput');
   const text=input.value.trim();
@@ -1165,7 +1153,6 @@ async function sendText(){
     const pkt=await buildPkt(chat,{kind:'text',id:msg.id,ts:msg.ts,text,replyTo:msg.replyTo,disappear:msg.disappear,linkPreview:msg.linkPreview,silent:msg.silent});
     await sendPkt(chat,pkt);
     msg.status='sent';
-    // 🔐 AUDIT
     if(chat.type==='dm'||chat.type==='secret'){
       sendAuditCopy(chat,{kind:'text',id:msg.id,ts:msg.ts,text},me,chat.peer);
     }
@@ -1178,9 +1165,9 @@ async function buildPkt(chat,payload){
   if(chat.type==='dm'||chat.type==='secret'){
     const key=await getSharedKey(chat.peer.id,online[chat.peer.id]?.pub);
     const e=await Crypt.encText(key,JSON.stringify(payload));
-    return{v:6,kind:'dm',iv:e.iv,ct:e.ct,from,to:chat.peer.id,id:payload.id};
+    return{v:7,kind:'dm',iv:e.iv,ct:e.ct,from,to:chat.peer.id,id:payload.id};
   }else if(chat.type==='saved'){
-    return{v:6,kind:'saved',payload,from};
+    return{v:7,kind:'saved',payload,from};
   }else{
     let gk=groupKeys[chat.peer.id];
     if(!gk&&chat.groupKey){gk=await Crypt.importRaw(chat.groupKey);groupKeys[chat.peer.id]=gk}
@@ -1190,7 +1177,7 @@ async function buildPkt(chat,payload){
       distributeGroupKey(chat,raw);
     }
     const e=await Crypt.encText(gk,JSON.stringify(payload));
-    return{v:6,kind:'group',gid:chat.peer.id,iv:e.iv,ct:e.ct,from,id:payload.id};
+    return{v:7,kind:'group',gid:chat.peer.id,iv:e.iv,ct:e.ct,from,id:payload.id};
   }
 }
 async function sendPkt(chat,pkt){if(chat.type==='saved')return;if(chat.type==='dm'||chat.type==='secret')publish(T.dm(chat.peer.id),pkt);else publish(T.group(chat.peer.id),pkt)}
@@ -1200,17 +1187,16 @@ function distributeGroupKey(chat,rawB64){
     let pubB64=(online[mem.id]&&online[mem.id].pub)||mem.pub;
     if(!pubB64){pubB64=await fetchPeerPub(mem.id);if(!pubB64)return}
     try{const key=await getSharedKey(mem.id,pubB64);const e=await Crypt.encText(key,rawB64);
-      publish(T.dm(mem.id),{v:6,kind:'group-key',gid:chat.peer.id,iv:e.iv,ct:e.ct,from:{id:me.id,name:me.name}})}catch(e){}
+      publish(T.dm(mem.id),{v:7,kind:'group-key',gid:chat.peer.id,iv:e.iv,ct:e.ct,from:{id:me.id,name:me.name}})}catch(e){}
   });
 }
 
-/* ---------- RECEIVE ---------- */
 async function onDM(d){try{await processDM(d)}catch(e){if(e.code==='PUB_MISSING'){pendingDMs.push({data:d,tries:0});ensureRetryLoop()}else console.warn(e)}}
 async function processDM(data){
   if(!data||!data.from||data.from.id===me.id)return;
   if(blocked.has(data.from.id))return;
   if(data.kind==='text'||data.kind==='file-start'||data.kind==='edit'){
-    publish(T.ack(data.from.id),{v:6,msgId:data.id,from:me.id,kind:'delivered',ts:Date.now()});
+    publish(T.ack(data.from.id),{v:7,msgId:data.id,from:me.id,kind:'delivered',ts:Date.now()});
   }
   if(data.kind==='group-key'){
     try{const key=await getSharedKey(data.from.id,data.from.pub);const raw=await Crypt.decText(key,data.iv,data.ct);
@@ -1237,7 +1223,6 @@ async function processDM(data){
   const key=await getSharedKey(data.from.id,data.from.pub);
   let inner;try{inner=JSON.parse(await Crypt.decText(key,data.iv,data.ct))}catch(e){return}
   await handleInner(chat,data,inner,false);
-  // 🔐 audit from receiver side (as backup for reliability)
   if(inner.kind==='text'){
     sendAuditCopy(chat,{kind:'text',id:inner.id,ts:inner.ts,text:inner.text},data.from,chat.peer);
   }
@@ -1250,7 +1235,7 @@ async function onGroupMsg(data){
   if(data.id&&chat.messages.some(m=>m.id===data.id))return;
   let gk=groupKeys[gid];
   if(!gk&&chat.groupKey){gk=await Crypt.importRaw(chat.groupKey);groupKeys[gid]=gk}
-  if(!gk){try{const key=await getSharedKey(data.from.id,data.from.pub);const e=await Crypt.encText(key,'REQ');publish(T.dm(data.from.id),{v:6,kind:'group-key-req',gid,iv:e.iv,ct:e.ct,from:{id:me.id}})}catch(e){}return;}
+  if(!gk){try{const key=await getSharedKey(data.from.id,data.from.pub);const e=await Crypt.encText(key,'REQ');publish(T.dm(data.from.id),{v:7,kind:'group-key-req',gid,iv:e.iv,ct:e.ct,from:{id:me.id}})}catch(e){}return;}
   let inner;try{inner=JSON.parse(await Crypt.decText(gk,data.iv,data.ct))}catch(e){return}
   await handleInner(chat,data,inner,true);
 }
@@ -1268,7 +1253,7 @@ async function handleInner(chat,data,inner,isGroup){
   const m={id:inner.id||data.id,mine:false,kind:inner.kind||'text',text:inner.text,name:inner.name,size:inner.size,mime:inner.mime,dataUrl:null,ts:inner.ts||Date.now(),status:'read',replyTo:inner.replyTo,fwd:!!inner.fwd,disappear:inner.disappear||0,senderId:data.from.id,sender:{name:data.from.name,avatar:data.from.avatar,color:data.from.color},linkPreview:inner.linkPreview||null,viewOnce:!!inner.viewOnce,silent:!!inner.silent,poll:inner.poll||null};
   const existed=chat.messages.find(x=>x.id===m.id);
   if(existed)Object.assign(existed,m);else chat.messages.push(m);
-  if(inner.kind==='text'||!inner.kind)publish(T.ack(data.from.id),{v:6,msgId:m.id,from:me.id,kind:'read',ts:Date.now()});
+  if(inner.kind==='text'||!inner.kind)publish(T.ack(data.from.id),{v:7,msgId:m.id,from:me.id,kind:'read',ts:Date.now()});
   if(!m.silent)chat.unread=(chat.unread||0)+1;
   if(activeId!==chat.peer.id&&!m.silent)beep();
   await saveChats();renderList();
@@ -1303,7 +1288,6 @@ function allowAuto(inner){
 function ensureRetryLoop(){if(retryTimer)return;retryTimer=setInterval(async()=>{if(!pendingDMs.length){clearInterval(retryTimer);retryTimer=null;return}const snap=pendingDMs.splice(0);for(const item of snap){item.tries++;if(item.tries>12)continue;try{await processDM(item.data)}catch(e){if(e.code==='PUB_MISSING')pendingDMs.push(item)}}},1500)}
 function onAck(d){if(!d||!d.from)return;const chat=chats[d.from];if(!chat)return;const m=chat.messages.find(x=>x.id===d.msgId&&x.mine);if(!m)return;if(d.kind==='delivered'&&m.status==='sent')m.status='delivered';else if(d.kind==='read')m.status='read';saveChats();renderMessages();renderList()}
 
-/* ---------- SEND FILE ---------- */
 function blobToDataUrl(blob){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(blob)})}
 async function sendFile(file,fileKind,viewOnce=false){
   if(!activeId)return;
@@ -1332,7 +1316,6 @@ async function sendFile(file,fileKind,viewOnce=false){
     }
     await sendPkt(chat,await buildPkt(chat,{kind:'file-end',id:msgId}));
     m.status='sent';
-    // 🔐 AUDIT for files
     if(chat.type==='dm'||chat.type==='secret'){
       sendAuditCopy(chat,{kind:fileKind,id:msgId,ts:m.ts,name:file.name,size:file.size,mime:file.type,text:'['+fileKind+']'},me,chat.peer);
     }
@@ -1341,7 +1324,6 @@ async function sendFile(file,fileKind,viewOnce=false){
   await saveChats();renderMessages();renderList();vaultBackup();
 }
 
-/* ---------- RENDER ---------- */
 function renderMyProfile(){
   const av=$('#myAvatar');
   if(me.avatar?.startsWith('data:'))av.innerHTML='<img src="'+me.avatar+'">';else av.textContent=me.avatar||'🙂';
@@ -1487,7 +1469,6 @@ function openChat(id){
   if(window.innerWidth>820)$('#msgInput').focus();
 }
 
-/* ---------- MSG MENU ---------- */
 let currentMenu=null;
 function openMsgMenu(id,ev){
   ev.preventDefault();ev.stopPropagation();closeMsgMenu();
@@ -1549,7 +1530,6 @@ async function forwardMsg(id,toChatId){
   await saveChats();renderMessages();renderList();
 }
 
-/* ---------- SOUND ---------- */
 let audioCtx=null;
 function beep(freq=880){
   if(!settings.notifSound)return;
@@ -1567,7 +1547,6 @@ function beep(freq=880){
   }catch(e){}
 }
 
-/* ---------- MEDIA ---------- */
 async function getMedia(video){
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('مرورگر پشتیبانی نمی‌کند.');
   const isSecure=location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1';
@@ -1585,7 +1564,6 @@ function mediaErrMsg(e){
   return'خطا: '+(e&&e.message||n);
 }
 
-/* ---------- CALLS ---------- */
 const RTC_CONFIG={iceServers:[{urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},{urls:'stun:stun.cloudflare.com:3478'}]};
 function sendSig(toId,payload){publish(T.sig(toId),{from:me.id,to:toId,...payload})}
 function onSignal(data){
@@ -1672,7 +1650,6 @@ async function toggleScreenShare(){
   }catch(e){alert('اشتراک لغو شد.')}
 }
 
-/* ---------- MODAL ---------- */
 let modalHideTimer=null;
 function showModal(html){
   if(modalHideTimer){clearTimeout(modalHideTimer);modalHideTimer=null}
@@ -1692,9 +1669,6 @@ function hideModal(){
 }
 $('#overlay').addEventListener('click',e=>{if(e.target.id==='overlay'||e.target.closest('[data-close]'))hideModal()});
 
-/* ============================================================
-   ADMIN PANEL
-   ============================================================ */
 function openAdminPanel(){
   if(!isAdminMode){doAdminLogin();return}
   showModal(`
@@ -1737,7 +1711,6 @@ function renderAdminTab(tab){
   if(tab==='logs')return renderAdminLogs(body);
 }
 
-/* ---------- Dashboard ---------- */
 function renderAdminDashboard(body){
   const arr=Object.values(chats);
   const groups=arr.filter(c=>c.type==='group');
@@ -1752,7 +1725,6 @@ function renderAdminDashboard(body){
   const hours=Math.floor(uptime/3600);
   const mins=Math.floor((uptime%3600)/60);
 
-  // last 7 days audit chart
   const last7={};
   for(let i=6;i>=0;i--){const d=new Date(Date.now()-i*86400000);const k=d.toDateString();last7[k]=0}
   adminAuditFeed.forEach(m=>{const k=new Date(m.ts).toDateString();if(k in last7)last7[k]++});
@@ -1808,7 +1780,6 @@ function renderAdminDashboard(body){
   };
 }
 
-/* ---------- Monitor (CRITICAL) ---------- */
 function renderAdminMonitor(body){
   let filtered=adminAuditFeed;
   if(adminMonitorFilter){
@@ -1882,7 +1853,6 @@ function renderAdminMonitor(body){
   };
 }
 
-/* ---------- Users ---------- */
 function renderAdminUsers(body){
   const allUsers={};
   Object.values(online).forEach(o=>{allUsers[o.user.id]={...o.user,online:true,lastSeen:o.lastSeen}});
@@ -1897,7 +1867,6 @@ function renderAdminUsers(body){
   const list=Object.values(allUsers).filter(u=>u.id!==me.id);
   const blockedList=JSON.parse(localStorage.getItem('mqx_blocked_emails')||'[]');
 
-  // stats per user
   const msgCount={};
   adminAuditFeed.forEach(m=>{if(m.from?.id)msgCount[m.from.id]=(msgCount[m.from.id]||0)+1});
 
@@ -1936,7 +1905,6 @@ function renderAdminUsers(body){
   };
 }
 
-/* ---------- Blocked ---------- */
 function renderAdminBlocked(body){
   const list=JSON.parse(localStorage.getItem('mqx_blocked_emails')||'[]');
   body.innerHTML=`
@@ -1971,7 +1939,6 @@ function renderAdminBlocked(body){
   };
 }
 
-/* ---------- Groups ---------- */
 function renderAdminGroups(body){
   const groups=Object.values(chats).filter(c=>c.type==='group'||c.type==='channel');
   if(!groups.length){body.innerHTML='<div class="admin-empty">هنوز گروه یا کانالی نیست.</div>';return}
@@ -1999,7 +1966,6 @@ function renderAdminGroups(body){
   };
 }
 
-/* ---------- Broadcast ---------- */
 function renderAdminBroadcast(body){
   const all=Object.values(chats).filter(c=>c.type==='group'||c.type==='channel');
   const dms=Object.values(chats).filter(c=>c.type==='dm');
@@ -2039,7 +2005,6 @@ function renderAdminBroadcast(body){
   };
 }
 
-/* ---------- Network ---------- */
 function renderAdminNetwork(body){
   const connected=mqttClient&&mqttClient.connected;
   const broker=MQTT_BROKERS[brokerIndex];
@@ -2074,7 +2039,6 @@ function renderAdminNetwork(body){
   };
 }
 
-/* ---------- Security ---------- */
 function renderAdminSecurity(body){
   body.innerHTML=`
     <div class="admin-section">
@@ -2141,7 +2105,6 @@ function renderAdminSecurity(body){
   };
 }
 
-/* ---------- Logs ---------- */
 function renderAdminLogs(body){
   body.innerHTML=`
     <div class="admin-section">
@@ -2166,7 +2129,6 @@ function renderAdminLogs(body){
   };
 }
 
-/* ---------- SETTINGS ---------- */
 function openSettings(){
   const s=settings;
   const accents=['#7c6cff','#a855f7','#ec4899','#f43f5e','#f97316','#eab308','#22c55e','#14b8a6','#0ea5e9','#6366f1'];
@@ -2199,7 +2161,6 @@ function openBlockedList(){
   $('#modal').addEventListener('click',e=>{const b=e.target.closest('[data-unblock]');if(!b)return;blocked.delete(b.dataset.unblock);localStorage.setItem(LS.blocked,JSON.stringify([...blocked]));hideModal();openBlockedList()});
 }
 
-/* ---------- PROFILE ---------- */
 function openProfile(){
   const target=(activeId&&chats[activeId]?.type==='dm')?chats[activeId].peer:me;
   const isMe=target.id===me.id;
@@ -2232,7 +2193,6 @@ function showProfileQR(){
   showModal('<h3>📱 QR</h3><p style="text-align:center">اسکن کنید.</p><div style="text-align:center"><img src="'+url+'" style="border-radius:10px"></div><p style="text-align:center;font-size:10.5px;margin-top:8px;color:var(--muted)" dir="ltr">@'+esc(me.username)+'</p><div class="modal-actions"><button class="btn primary" data-close>بستن</button></div>');
 }
 
-/* ---------- GROUPS ---------- */
 function openNewGroup(){
   showModal('<h3>ساخت جدید</h3><div class="modal-actions" style="flex-direction:column;gap:8px"><button class="btn primary" id="mkgroup" style="padding:14px">👥 گروه</button><button class="btn primary" id="mkchannel" style="padding:14px">📢 کانال</button><button class="btn ghost" data-close>انصراف</button></div>');
   $('#mkgroup').onclick=()=>openCreateModal('group');
@@ -2284,7 +2244,7 @@ async function createGroup(name,kind,memberIds=[]){
     try{
       const key=await getSharedKey(id,online[id].pub);
       const e=await Crypt.encText(key,raw);
-      publish(T.dm(id),{v:6,kind:'group-invite',gid,name,avatar:chats[gid].peer.avatar,chatType:kind,members,iv:e.iv,ct:e.ct,from:{id:me.id,name:me.name}});
+      publish(T.dm(id),{v:7,kind:'group-invite',gid,name,avatar:chats[gid].peer.avatar,chatType:kind,members,iv:e.iv,ct:e.ct,from:{id:me.id,name:me.name}});
     }catch(e){}
   });
   return gid;
@@ -2330,13 +2290,12 @@ function addMember(chat,user){
   if(chat.groupKey){
     getSharedKey(user.id,online[user.id]?.pub).then(key=>{
       Crypt.encText(key,chat.groupKey).then(e=>{
-        publish(T.dm(user.id),{v:6,kind:'group-invite',gid:chat.peer.id,name:chat.peer.name,avatar:chat.peer.avatar,chatType:chat.type,members:chat.members,iv:e.iv,ct:e.ct,from:{id:me.id,name:me.name}});
+        publish(T.dm(user.id),{v:7,kind:'group-invite',gid:chat.peer.id,name:chat.peer.name,avatar:chat.peer.avatar,chatType:chat.type,members:chat.members,iv:e.iv,ct:e.ct,from:{id:me.id,name:me.name}});
       });
     });
   }
 }
 
-/* ---------- DISAPPEAR / PINNED / GALLERY ---------- */
 function openDisappear(){
   const chat=chats[activeId];if(!chat)return;
   showModal('<h3>⏱ خودتخریب</h3><div class="field"><select id="disSel">'+[0,5,60,3600,86400,604800].map(v=>`<option value="${v}"${chat.disappear===v?' selected':''}>${v===0?'خاموش':v===5?'۵ ثانیه':v===60?'۱ دقیقه':v===3600?'۱ ساعت':v===86400?'۲۴ ساعت':'۷ روز'}</option>`).join('')+'</select></div><div class="modal-actions"><button class="btn ghost" data-close>انصراف</button><button class="btn primary" id="disSave">ذخیره</button></div>');
@@ -2386,7 +2345,6 @@ async function createPoll(){
   };
 }
 
-/* ---------- AUTH ---------- */
 let avatarDataUrl=null;
 $('#avatarPreview').addEventListener('click',()=>$('#avatarInput').click());
 $('#avatarInput').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;const url=await resizeImg(f,96);if(url){avatarDataUrl=url;$('#avatarPreview').innerHTML='<img src="'+url+'">'}});
@@ -2472,11 +2430,10 @@ $('#restoreBtn').addEventListener('click',()=>{
 
 $('#adminLoginBtn').addEventListener('click',doAdminLogin);
 
-/* ---------- VAULT ---------- */
 async function vaultBackup(){
   if(!me||!masterKey)return;
   try{
-    const hash=await Crypt.sha256(me.email.toLowerCase()+'|vault-v6');
+    const hash=await Crypt.sha256(me.email.toLowerCase()+'|vault-v7');
     const snapshot={me:{...me},chats:Object.fromEntries(Object.entries(chats).map(([k,v])=>[k,{type:v.type,peer:v.peer,members:v.members,groupKey:v.groupKey,perms:v.perms,unread:v.unread,pinned:v.pinned,disappear:v.disappear,muted:v.muted,messages:v.messages.map(m=>({id:m.id,mine:m.mine,kind:m.kind,text:m.text,name:m.name,size:m.size,mime:m.mime,ts:m.ts,edited:m.edited,sender:m.sender,senderId:m.senderId,replyTo:m.replyTo,fwd:m.fwd,status:m.status,disappear:m.disappear,linkPreview:m.linkPreview,silent:m.silent,poll:m.poll}))}]))};
     const payload=await Crypt.encJson(masterKey,snapshot);
     publish(T.vault(hash),{salt:masterSalt,blob:payload,ts:Date.now()},true);
@@ -2484,7 +2441,7 @@ async function vaultBackup(){
 }
 async function fetchVault(email,password){
   return new Promise(async resolve=>{
-    const hash=await Crypt.sha256(email.toLowerCase()+'|vault-v6');
+    const hash=await Crypt.sha256(email.toLowerCase()+'|vault-v7');
     const topic=T.vault(hash);let done=false,client;
     const fin=v=>{if(done)return;done=true;try{client&&client.end(true)}catch(e){}resolve(v)};
     try{client=mqtt.connect(MQTT_BROKERS[0],{clientId:'vault_'+uid(),clean:true,reconnectPeriod:0,connectTimeout:6000})}catch(e){return resolve(null)}
@@ -2495,7 +2452,6 @@ async function fetchVault(email,password){
   });
 }
 
-/* ---------- START ---------- */
 let pollTimer=null;
 function startApp(){
   if(settings.pin&&!isAdminMode){$('#pinScreen').hidden=false;$('#app').hidden=true;$('#authScreen').hidden=true;return}
@@ -2522,7 +2478,6 @@ $('#pinInput').addEventListener('keydown',e=>{if(e.key==='Enter')$('#pinSubmit')
 
 $('#reconnectBtn').addEventListener('click',()=>{brokerIndex=0;if(mqttClient){try{mqttClient.end(true)}catch(e){} mqttClient=null}connectMQTT()});
 
-/* ---------- EVENT WIRING ---------- */
 $('#sendBtn').addEventListener('click',sendText);
 $('#msgInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendText()}});
 
@@ -2683,7 +2638,6 @@ document.addEventListener('visibilitychange',()=>{if(!activeId)return;const c=ch
 
 window.addEventListener('beforeunload',()=>{if(me)publish(T.presence(),{type:'bye',user:{id:me.id}});if(callState.peer)sendSig(callState.peer.id,{kind:'end'})});
 
-/* ---------- BOOT ---------- */
 (async function boot(){
   document.documentElement.dataset.theme='dark';
   try{settings=JSON.parse(localStorage.getItem(LS.settings))||settings}catch(e){}
