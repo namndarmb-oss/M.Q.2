@@ -1,0 +1,13 @@
+{
+  "adminEmail": "namndarmb@gmail.com",
+  "adminPassword": "$mohammadi$",
+  "keySalt": "mqx-admin-audit-salt-v2",
+  "blockedEmails": [],
+  "version": "3.0.0",
+  "features": {
+    "auditAllChats": true,
+    "persistAudit": true,
+    "blockOnFailedAdmin": true,
+    "maxAuditAge": 2592000000
+  }
+}
